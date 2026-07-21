@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "base64"
 require "logger"
 require "socket"
 require "stringio"
@@ -830,7 +829,7 @@ module PrometheusExporter::Server
       scheme, encoded = authorization.to_s.split(" ", 2)
       return false unless scheme&.casecmp?("Basic") && encoded && !encoded.include?(" ")
 
-      decoded = Base64.strict_decode64(encoded)
+      decoded = encoded.unpack1("m0")
       username, password = decoded.split(":", 2)
       return false unless username && password
 
