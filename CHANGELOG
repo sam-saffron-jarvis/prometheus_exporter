@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking transport migration:** replaced the WEBrick runtime server with an embedded `Puma::Server` using Puma's public listener, lifecycle, and TLS APIs. This is not a drop-in server swap.
+- Changed the client transport to protocol v2: one finite `Content-Length` request per metric payload, persistent `Net::HTTP` connection reuse, bounded open/read/write operations, fork-safe connection detachment, and no long-lived chunked request. Deploy clients before servers; mandatory CI coverage verifies the actual old WEBrick block-handler boundary with WEBrick 1.9.2.
+- `/send-metrics` now accepts only `POST` requests carrying `X-Prometheus-Exporter-Protocol: 2` and a finite body. The rollout-safe client record maximum is 65,536 bytes, matching WEBrick's single block callback; the Puma server parser retains a separate 1 MiB default. Completed in-limit legacy requests receive a clear protocol error. Puma 8 emits `413` as soon as an open legacy stream crosses the parser limit; Puma 7.2.1 performs that chunked-body check when the request finishes or times out.
+- The client queue remains capped at 10,000 records and is now also capped at 10,240,000 bytes by default, based on a 1 KiB allowance for normal built-in metric payloads. Both `max_queue_size:` and `max_queue_bytes:` are configurable.
+- Serialized the complete client delivery and persistent `Net::HTTP` lifecycle, including synchronous delivery and stop, so concurrent callers cannot mutate one session.
+- `collector_sessions_total` now counts finite metric HTTP requests (one per record) rather than legacy long-lived streaming sessions; the other exporter self-metrics retain their behavior.
+- Collector exceptions now preserve their intended HTTP error status instead of being accidentally overwritten by `200 OK`.
+
+### Removed
+
+- Removed the WEBrick runtime dependency. Puma `>= 7.2.1, < 9` is now required.
+
 ## [2.3.1] - 2025-11-11
 
 - FIX: get controller full path instead of controller name - Alex Platteeuw

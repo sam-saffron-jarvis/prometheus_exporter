@@ -1,0 +1,6 @@
+source "https://rubygems.org"
+
+gem "minitest"
+gem "rake"
+gem "webrick", "1.9.2"
+gemspec path: "../"

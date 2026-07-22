@@ -30,7 +30,7 @@ To learn more see [Instrumenting Rails with Prometheus](https://samsaffron.com/a
   * [Client default host](#client-default-host)
   * [Histogram mode](#histogram-mode)
   * [Histogram - custom buckets](#histogram---custom-buckets)
-* [Transport concerns](#transport-concerns)
+* [Transport protocol and rollout](#transport-protocol-and-rollout)
 * [JSON generation and parsing](#json-generation-and-parsing)
 * [Logging](#logging)
 * [Docker Usage](#docker-usage)
@@ -40,7 +40,7 @@ To learn more see [Instrumenting Rails with Prometheus](https://samsaffron.com/a
 
 ## Requirements
 
-Minimum Ruby of version 3.0.0 is required, Ruby 2.7 is EOL as of March 31st 2023.
+Minimum Ruby version 3.2.0 is required.
 
 ## Migrating from v0.x
 
@@ -981,11 +981,41 @@ histogram = Histogram.new('test_bucktets', 'I have specified buckets', buckets: 
 histogram.buckets => [0.1, 0.2, 0.3]
 ```
 
-## Transport concerns
+## Transport protocol and rollout
 
-Prometheus Exporter handles transport using a simple HTTP protocol. In multi process mode we avoid needing a large number of HTTP request by using chunked encoding to send metrics. This means that a single HTTP channel can deliver 100s or even 1000s of metrics over a single HTTP session to the `/send-metrics` endpoint. All calls to `send` and `send_json` on the `PrometheusExporter::Client` class are **non-blocking** and batched.
+`PrometheusExporter::Client#send` and `#send_json` remain asynchronous: they enqueue records and a background worker performs network I/O. On the wire, protocol v2 sends **exactly one metric record per finite HTTP request**:
 
-The `/bench` directory has simple benchmark, which is able to send through 10k messages in 500ms.
+```http
+POST /send-metrics HTTP/1.1
+Host: localhost
+Content-Type: application/octet-stream
+X-Prometheus-Exporter-Protocol: 2
+Content-Length: 123
+
+<exactly 123 bytes: JSON or a custom opaque collector payload>
+```
+
+The client reads every HTTP response before sending the next record. It reuses the connection only when HTTP response framing and connection headers make that safe. A payload is never newline-delimited or combined with another payload; `Content-Length` is its byte length. JSON serialization still supports both JSON and Oj, while `send` continues to support custom opaque/binary payloads.
+
+### Required client-first rollout
+
+**This is a breaking transport migration, not a drop-in server replacement.** Puma buffers and dechunks the complete request body before invoking the exporter application. It therefore cannot process the old, indefinitely open chunked stream record-by-record. Roll out in this order:
+
+1. Deploy the new finite-request client to every producer while the old WEBrick exporter server is still running. WEBrick accepts these ordinary `Content-Length` requests and ignores the v2 header.
+2. Confirm all producers are upgraded.
+3. Deploy the Puma exporter server.
+
+The Puma server requires the v2 protocol header and a finite body. A completed legacy request is rejected with a clear `400 Unsupported metrics protocol` response; a request without `Content-Length` is rejected with `411 Length Required`. An old long-lived chunked client receives no response while its unterminated body remains within the parser limit because Puma is still buffering it. Puma 8 emits `413 Payload Too Large` as soon as an open stream crosses the parser limit. Puma 7.2.1 applies that chunked-body check only when the request finishes (or times out), so upgrading clients first remains mandatory on every supported Puma version.
+
+The client defaults to a 65,536-byte maximum record. This is the exact default `InputBufferSize` at which the old WEBrick block body handler still invokes the collector once; a larger finite request is split across callbacks and is not rollout-safe. The Puma server parser retains a separate 1 MiB default limit. `max_record_size:` can configure either side, but increasing the client above 65,536 bytes is safe only after no old WEBrick server remains in the rollout path.
+
+The client preserves the historical 10,000-record queue cap and also defaults `max_queue_bytes:` to 10,240,000 bytes (10,000 × 1 KiB, reflecting the sub-1-KiB size of normal built-in metric records). A record is dropped when either `max_queue_size:` or `max_queue_bytes:` would be exceeded, preventing the record-size ceiling from implying a multi-gigabyte default queue. Tune both limits for unusually large custom payloads.
+
+Client network operations have finite defaults and can be tuned with `open_timeout:`, `read_timeout:`, and `write_timeout:`. `open_timeout:` covers TCP connection establishment and the TLS handshake in `Net::HTTP`; `read_timeout:` bounds response reads. `Net::HTTP#ssl_timeout` is intentionally not set: it controls TLS session lifetime, not the handshake deadline. The older `connect_timeout:` option remains an alias that takes precedence over `open_timeout:`. TLS requires `tls_ca_file:`, `tls_cert_file:`, and `tls_key_file:` together and verifies the server certificate hostname while sending SNI for DNS hostnames.
+
+`stop(wait_timeout_seconds:)` waits for both queued records and a record already dequeued but still awaiting its response, up to the supplied deadline. Delivery remains at most once: a record is dropped after a network or non-success HTTP response and is never silently replayed.
+
+The `/bench` directory contains a repeatable finite-request transport benchmark that measures through the final client acknowledgement.
 
 ## JSON generation and parsing
 

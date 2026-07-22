@@ -6,7 +6,23 @@ require "rake/testtask"
 Rake::TestTask.new(:test) do |t|
   t.libs << "test"
   t.libs << "lib"
-  t.test_files = FileList["test/**/*_test.rb"]
+  t.test_files =
+    FileList["test/**/*_test.rb"].exclude(
+      "test/client_webrick_compatibility_test.rb",
+      "test/package_load_test.rb",
+    )
+end
+
+Rake::TestTask.new(:webrick_compatibility) do |t|
+  t.libs << "test"
+  t.libs << "lib"
+  t.test_files = FileList["test/client_webrick_compatibility_test.rb"]
+end
+
+Rake::TestTask.new(:package_smoke) do |t|
+  t.libs << "test"
+  t.libs << "lib"
+  t.test_files = FileList["test/package_load_test.rb"]
 end
 
 task default: :test

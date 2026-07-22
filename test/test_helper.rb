@@ -8,6 +8,7 @@ SimpleCov.start { add_filter "test/" }
 require "minitest/mock"
 require "minitest/autorun"
 require "ostruct"
+require "puma"
 require "redis"
 
 module TestingMod
@@ -69,18 +70,6 @@ end
 
 RedisClient::Middlewares.prepend(TestingMod)
 RedisClient.register(RedisValidationMiddleware)
-
-unless defined?(::Puma)
-  module Puma
-    module Const
-      VERSION = "6.6.0"
-    end
-
-    def self.stats
-      "{}"
-    end
-  end
-end
 
 class TestHelper
   def self.wait_for(time, &blk)

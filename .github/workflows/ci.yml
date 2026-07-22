@@ -42,9 +42,71 @@ jobs:
       - name: Run tests
         run: bin/rake
 
+  puma-api:
+    runs-on: ubuntu-latest
+    name: Puma ${{ matrix.puma }} API
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        puma: ["7.2.1", "8.0.2"]
+
+    env:
+      PUMA_VERSION: ${{ matrix.puma }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler: latest
+          bundler-cache: true
+
+      - name: Verify embedded server and wire protocol
+        run: bin/rake test
+
+  webrick-compatibility:
+    runs-on: ubuntu-latest
+    name: New client / WEBrick 1.9.2
+    timeout-minutes: 10
+
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/webrick_compatibility.gemfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler: latest
+          bundler-cache: true
+
+      - name: Verify mandatory client-first rollout compatibility
+        run: bin/rake webrick_compatibility
+
+  package-smoke:
+    runs-on: ubuntu-latest
+    name: Isolated built gem load
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler: latest
+          bundler-cache: true
+
+      - name: Build, install, and load the gem in isolation
+        run: bin/rake package_smoke
+
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build
+    needs: [build, puma-api, webrick-compatibility, package-smoke]
     runs-on: ubuntu-latest
 
     outputs:
