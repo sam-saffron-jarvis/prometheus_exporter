@@ -30,4 +30,5 @@ Gem::Specification.new do |spec|
   spec.add_dependency "puma", ">= 7.2.1", "< 9"
   spec.add_dependency "stringio"
   spec.add_dependency "timeout"
+  spec.add_dependency "zlib"
 end

@@ -435,7 +435,7 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     end
   end
 
-  def test_start_failure_is_synchronous_and_closes_log_and_listeners
+  def test_start_failure_cleans_listeners_and_allows_retry_until_terminal_stop
     blocker = TCPServer.new("127.0.0.1", 0)
     port = blocker.local_address.ip_port
     Dir.mktmpdir("prometheus-exporter-log") do |directory|
@@ -449,11 +449,22 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
         )
 
       assert_raises(Errno::EADDRINUSE) { server.start }
+      assert_operator(open_descriptors_for(path), :>, 0)
+
+      blocker.close
+      blocker = nil
+      runner = server.start
+      assert_predicate(runner, :alive?)
+      assert_equal("PONG", Net::HTTP.get("127.0.0.1", "/ping", port))
+
+      server.stop
       assert_equal(0, open_descriptors_for(path))
+      error = assert_raises(RuntimeError) { server.start }
+      assert_match(/has been stopped/, error.message)
     ensure
       server&.stop
     end
-    blocker.close
+
     replacement = TCPServer.new("127.0.0.1", port)
     assert_equal(port, replacement.local_address.ip_port)
   ensure

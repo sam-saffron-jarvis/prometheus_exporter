@@ -322,11 +322,24 @@ class PrometheusExporterClientWireTest < Minitest::Test
     end
   end
 
-  def test_record_size_is_bounded_before_enqueue
-    client = PrometheusExporter::Client.new(max_record_size: 3)
+  def test_oversized_record_is_dropped_before_enqueue
+    logs = StringIO.new
+    client = PrometheusExporter::Client.new(max_record_size: 3, logger: Logger.new(logs))
 
-    error = assert_raises(ArgumentError) { client.send("four") }
-    assert_match(/maximum is 3 bytes/, error.message)
+    assert_nil(client.send("four"))
+    assert_empty(client.instance_variable_get(:@queue))
+    assert_match(/dropping message.*4 bytes; maximum is 3 bytes/, logs.string)
+  ensure
+    client&.stop
+  end
+
+  def test_oversized_json_record_is_dropped_without_raising
+    logs = StringIO.new
+    client = PrometheusExporter::Client.new(max_record_size: 3, logger: Logger.new(logs))
+
+    assert_nil(client.send_json(value: "too large"))
+    assert_empty(client.instance_variable_get(:@queue))
+    assert_match(/dropping message.*maximum is 3 bytes/, logs.string)
   ensure
     client&.stop
   end

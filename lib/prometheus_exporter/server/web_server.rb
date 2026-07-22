@@ -132,8 +132,7 @@ module PrometheusExporter::Server
       end
     private_constant :PAGESIZE
 
-    MAX_RECORD_SIZE = 1024 * 1024
-    private_constant :MAX_RECORD_SIZE
+    DEFAULT_MAX_RECORD_SIZE = 1024 * 1024
 
     NOT_FOUND =
       "Not Found! The Prometheus Ruby Exporter only listens on /ping, /metrics and /send-metrics"
@@ -148,7 +147,7 @@ module PrometheusExporter::Server
       @verbose = opts[:verbose] || false
       @auth = opts[:auth]
       @realm = opts[:realm] || PrometheusExporter::DEFAULT_REALM
-      @max_record_size = positive_integer(opts.fetch(:max_record_size, MAX_RECORD_SIZE))
+      @max_record_size = positive_integer(opts.fetch(:max_record_size, DEFAULT_MAX_RECORD_SIZE))
       @tls_cert_file = opts[:tls_cert_file]
       @tls_key_file = opts[:tls_key_file]
       @pid = Process.pid
@@ -180,25 +179,29 @@ module PrometheusExporter::Server
       return @runner if @runner&.alive?
       raise "prometheus collector web server has been stopped" if @stopped
 
-      hosts = listener_hosts
-      @logger.info "Listening on both 0.0.0.0/:: network interfaces" if %w[ALL ANY].include?(@bind)
-      ssl_context = build_ssl_context if @tls_cert_file
-      @adapter =
-        PumaAdapter.new(
-          self,
-          log_writer: @puma_log_writer,
-          max_record_size: @max_record_size,
-          logger: @logger,
-          verbose: @verbose,
-        )
-      @runner, @port = @adapter.start(hosts: hosts, port: @port, ssl_context: ssl_context)
-      @runner
-    rescue => e
-      @logger&.error "Failed to start prometheus collector web on port #{@port}: #{e}"
-      @adapter&.stop
-      close_owned_log
-      @stopped = true
-      raise
+      begin
+        hosts = listener_hosts
+        if %w[ALL ANY].include?(@bind)
+          @logger.info "Listening on both 0.0.0.0/:: network interfaces"
+        end
+        ssl_context = build_ssl_context if @tls_cert_file
+        @adapter =
+          PumaAdapter.new(
+            self,
+            log_writer: @puma_log_writer,
+            max_record_size: @max_record_size,
+            logger: @logger,
+            verbose: @verbose,
+          )
+        @runner, @port = @adapter.start(hosts: hosts, port: @port, ssl_context: ssl_context)
+        @runner
+      rescue => e
+        @logger&.error "Failed to start prometheus collector web on port #{@port}: #{e}"
+        @adapter&.stop
+        @adapter = nil
+        @runner = nil
+        raise
+      end
     end
 
     def stop

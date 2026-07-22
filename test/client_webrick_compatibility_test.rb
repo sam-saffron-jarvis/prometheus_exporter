@@ -24,13 +24,14 @@ class PrometheusExporterClientWEBrickCompatibilityTest < Minitest::Test
     end
   end
 
-  def test_default_client_rejects_above_the_legacy_callback_boundary
+  def test_default_client_drops_above_the_legacy_callback_boundary
     received = Queue.new
     with_old_webrick_block_handler(received) do |port|
-      client = synchronous_client(port)
+      logs = StringIO.new
+      client = synchronous_client(port, logger: Logger.new(logs))
 
-      error = assert_raises(ArgumentError) { client.send("x".b * (LEGACY_INPUT_BUFFER_SIZE + 1)) }
-      assert_match(/maximum is 65536 bytes/, error.message)
+      assert_nil(client.send("x".b * (LEGACY_INPUT_BUFFER_SIZE + 1)))
+      assert_match(/maximum is 65536 bytes/, logs.string)
       assert_raises(ThreadError) { received.pop(true) }
     ensure
       client&.stop

@@ -63,6 +63,7 @@ jobs:
           ruby-version: "3.2"
           bundler: latest
           bundler-cache: true
+          cache-version: puma-${{ matrix.puma }}
 
       - name: Verify embedded server and wire protocol
         run: bin/rake test

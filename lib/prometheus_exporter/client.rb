@@ -152,8 +152,11 @@ module PrometheusExporter
     def send(str)
       record = str.dup
       if record.bytesize > @max_record_size
-        raise ArgumentError,
-              "metric record is #{record.bytesize} bytes; maximum is #{@max_record_size} bytes"
+        logger.warn(
+          "Prometheus Exporter client is dropping message cause metric record is " \
+            "#{record.bytesize} bytes; maximum is #{@max_record_size} bytes",
+        )
+        return
       end
 
       @delivery_mutex.synchronize do
