@@ -259,11 +259,7 @@ module PrometheusExporter::Server
     end
 
     def response(status, body, headers = {})
-      headers = {
-        "Content-Type" => "text/plain; charset=utf-8",
-        "Content-Length" => body.bytesize.to_s,
-      }.merge(headers)
-      [status, headers, [body]]
+      [status, { "Content-Type" => "text/plain; charset=utf-8" }.merge(headers), [body]]
     end
 
     def authenticated?(env)
