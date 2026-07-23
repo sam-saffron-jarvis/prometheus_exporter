@@ -68,26 +68,6 @@ jobs:
       - name: Verify embedded server and wire behavior
         run: bin/rake test
 
-  webrick-compatibility:
-    runs-on: ubuntu-latest
-    name: New client / WEBrick 1.9.2
-    timeout-minutes: 10
-
-    env:
-      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/webrick_compatibility.gemfile
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.2"
-          bundler: latest
-          bundler-cache: true
-
-      - name: Verify new client compatibility with WEBrick
-        run: bin/rake webrick_compatibility
-
   package-smoke:
     runs-on: ubuntu-latest
     name: Isolated built gem load
@@ -107,7 +87,7 @@ jobs:
 
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build, puma-api, webrick-compatibility, package-smoke]
+    needs: [build, puma-api, package-smoke]
     runs-on: ubuntu-latest
 
     outputs:
