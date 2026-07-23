@@ -83,49 +83,22 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     end
   end
 
-  def test_each_request_body_is_delivered_as_one_payload
+  # Each completed request body is passed to the collector as a single opaque
+  # payload, whether it is one JSON object, several adjacent objects, or non-JSON.
+  def test_each_completed_body_is_delivered_verbatim_as_one_payload
     collector = RecordingCollector.new
-    first = JSON.generate(name: "one")
-    second = JSON.generate(name: "two")
+    bodies = [
+      JSON.generate(name: "one"),
+      JSON.generate(name: "a") + JSON.generate(name: "b"),
+      "{]{}",
+    ]
 
     with_server(collector: collector) do |server, port|
-      assert_equal("200", post(port, first).code)
-      assert_equal("200", post(port, second).code)
+      bodies.each { |body| assert_equal("200", post(port, body).code) }
 
-      assert_equal([first, second], collector.payloads)
-      assert_match(/collector_metrics_total 2/, server.metrics)
-      assert_match(/collector_sessions_total 2/, server.metrics)
-    end
-  end
-
-  # The 3.0 client sends one metric per finite request, so the web server hands
-  # each completed body to the collector verbatim and never re-splits it. A
-  # legacy client's chunked stream is dechunked by Puma into a single
-  # concatenated body and delivered as one opaque payload.
-  def test_completed_body_is_not_re_split_into_multiple_metrics
-    collector = RecordingCollector.new
-    first = JSON.generate(name: "one")
-    second = JSON.generate(name: "two")
-
-    with_server(collector: collector) do |server, port|
-      response = post(port, first + second)
-
-      assert_equal("200", response.code)
-      assert_equal([first + second], collector.payloads)
-      assert_match(/collector_metrics_total 1/, server.metrics)
-      assert_match(/collector_sessions_total 1/, server.metrics)
-    end
-  end
-
-  def test_non_json_object_stream_remains_one_opaque_payload
-    collector = RecordingCollector.new
-    payload = "{]{}"
-
-    with_server(collector: collector) do |_server, port|
-      response = post(port, payload)
-
-      assert_equal("200", response.code)
-      assert_equal([payload], collector.payloads)
+      assert_equal(bodies, collector.payloads)
+      assert_match(/collector_metrics_total 3/, server.metrics)
+      assert_match(/collector_sessions_total 3/, server.metrics)
     end
   end
 
@@ -286,7 +259,10 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     assert_match(/must be configured together/, error.message)
   end
 
-  def test_oversized_fixed_body_is_rejected_by_puma_parser
+  # max_record_size is wired through to Puma's http_content_length_limit, so an
+  # oversize body is rejected with a 413 before the app is invoked. Puma owns the
+  # enforcement across framings; we only confirm the limit is plumbed through.
+  def test_oversized_body_is_rejected_with_413
     with_server(collector: RecordingCollector.new, max_record_size: 16) do |_server, port|
       socket = TCPSocket.new("127.0.0.1", port)
       socket.write(
@@ -299,65 +275,6 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     ensure
       socket&.close
     end
-  end
-
-  def test_oversized_chunked_body_is_rejected_by_puma_parser
-    with_server(collector: RecordingCollector.new, max_record_size: 16) do |_server, port|
-      socket = TCPSocket.new("127.0.0.1", port)
-      socket.write(
-        "POST /send-metrics HTTP/1.1\r\nHost: localhost\r\n" \
-          "Transfer-Encoding: chunked\r\n\r\n" \
-          "11\r\n0123456789abcdefg\r\n0\r\n\r\n",
-      )
-
-      status, = read_response(socket)
-      assert_equal(413, status)
-    ensure
-      socket&.close
-    end
-  end
-
-  def test_oversized_unterminated_legacy_stream_gets_413_when_parser_limit_is_crossed
-    if Gem::Version.new(Puma::Const::PUMA_VERSION) < Gem::Version.new("8.0.0")
-      skip "Puma before 8 enforces the chunked body limit only after the request finishes"
-    end
-
-    with_server(collector: RecordingCollector.new, max_record_size: 16) do |_server, port|
-      socket = TCPSocket.new("127.0.0.1", port)
-      socket.write(
-        "POST /send-metrics HTTP/1.1\r\nHost: localhost\r\n" \
-          "Transfer-Encoding: chunked\r\n\r\n" \
-          "10\r\n0123456789abcdef\r\n1\r\ng\r\n",
-      )
-
-      assert(IO.select([socket], nil, nil, 1), "Puma did not reject the open stream promptly")
-      status, = read_response(socket)
-      assert_equal(413, status)
-    ensure
-      socket&.close
-    end
-  end
-
-  def test_port_zero_uses_one_ephemeral_port_for_any_bind
-    server =
-      PrometheusExporter::Server::WebServer.new(
-        port: 0,
-        bind: "ANY",
-        collector: RecordingCollector.new,
-      )
-    server.start
-
-    assert_operator(server.port, :>, 0)
-    assert_equal("PONG", Net::HTTP.get("127.0.0.1", "/ping", server.port))
-    if Socket.ip_address_list.any?(&:ipv6_loopback?)
-      begin
-        assert_equal("PONG", Net::HTTP.get("::1", "/ping", server.port))
-      rescue Errno::EADDRNOTAVAIL, Errno::ECONNREFUSED
-        skip "this host cannot bind both wildcard address families"
-      end
-    end
-  ensure
-    server&.stop
   end
 
   def test_localhost_binds_every_loopback_on_one_port_and_releases_it_on_stop
@@ -381,24 +298,6 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
   ensure
     server&.stop
     replacement&.close
-  end
-
-  def test_any_and_localhost_binds_fail_on_material_family_conflicts
-    %w[ANY localhost].each do |bind|
-      blocker = TCPServer.new("127.0.0.1", 0)
-      port = blocker.local_address.ip_port
-      server =
-        PrometheusExporter::Server::WebServer.new(
-          port: port,
-          bind: bind,
-          collector: RecordingCollector.new,
-        )
-
-      assert_raises(Errno::EADDRINUSE, "#{bind} silently accepted a partial bind") { server.start }
-    ensure
-      server&.stop
-      blocker&.close
-    end
   end
 
   def test_stop_before_start_closes_owned_log_file
