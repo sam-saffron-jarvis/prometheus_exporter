@@ -37,7 +37,7 @@ def run_prometheus_exporter(arguments = ARGV)
     end
     opt.on('--max-record-size INTEGER',
            Integer,
-           "Maximum metric record size in bytes (default: #{PrometheusExporter::Server::WebServer::DEFAULT_MAX_RECORD_SIZE})") do |o|
+           "Maximum completed metric request size in bytes (default: #{PrometheusExporter::Server::WebServer::DEFAULT_MAX_RECORD_SIZE})") do |o|
       options[:max_record_size] = o.to_i
     end
     opt.on('--prefix METRIC_PREFIX', "Prefix to apply to all metrics (default: #{PrometheusExporter::DEFAULT_PREFIX})") do |o|

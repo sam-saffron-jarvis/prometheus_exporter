@@ -289,7 +289,6 @@ module PrometheusExporter
       ensure_http!
       request = Net::HTTP::Post.new("/send-metrics")
       request["Content-Type"] = "application/octet-stream"
-      request["X-Prometheus-Exporter-Protocol"] = "2"
       request["Content-Length"] = message.bytesize.to_s
       request.body = message
       @http.request(request)

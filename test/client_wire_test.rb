@@ -34,7 +34,7 @@ class PrometheusExporterClientWireTest < Minitest::Test
     requests.each do |request_line, headers, body|
       assert_equal("POST /send-metrics HTTP/1.1", request_line)
       assert_equal(body.bytesize.to_s, headers["content-length"])
-      assert_equal("2", headers["x-prometheus-exporter-protocol"])
+      refute(headers.key?("x-prometheus-exporter-protocol"))
       refute(headers.key?("transfer-encoding"))
     end
   ensure

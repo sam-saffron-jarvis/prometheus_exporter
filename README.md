@@ -30,7 +30,7 @@ To learn more see [Instrumenting Rails with Prometheus](https://samsaffron.com/a
   * [Client default host](#client-default-host)
   * [Histogram mode](#histogram-mode)
   * [Histogram - custom buckets](#histogram---custom-buckets)
-* [Transport protocol and rollout](#transport-protocol-and-rollout)
+* [Transport and version compatibility](#transport-and-version-compatibility)
 * [JSON generation and parsing](#json-generation-and-parsing)
 * [Logging](#logging)
 * [Docker Usage](#docker-usage)
@@ -981,33 +981,43 @@ histogram = Histogram.new('test_bucktets', 'I have specified buckets', buckets: 
 histogram.buckets => [0.1, 0.2, 0.3]
 ```
 
-## Transport protocol and rollout
+## Transport and version compatibility
 
-`PrometheusExporter::Client#send` and `#send_json` remain asynchronous: they enqueue records and a background worker performs network I/O. On the wire, protocol v2 sends **exactly one metric record per finite HTTP request**:
+`PrometheusExporter::Client#send` and `#send_json` remain asynchronous: they enqueue records and a background worker performs network I/O. In 3.0 the client sends **exactly one metric record per completed HTTP request**:
 
 ```http
 POST /send-metrics HTTP/1.1
 Host: localhost
 Content-Type: application/octet-stream
-X-Prometheus-Exporter-Protocol: 2
 Content-Length: 123
 
 <exactly 123 bytes: JSON or a custom opaque collector payload>
 ```
 
-The client reads every HTTP response before sending the next record. It reuses the connection only when HTTP response framing and connection headers make that safe. A payload is never newline-delimited or combined with another payload; `Content-Length` is its byte length. JSON serialization still supports both JSON and Oj, while `send` continues to support custom opaque/binary payloads.
+This does not add a version header or a new payload format. The client reads every HTTP response before sending the next record and reuses the persistent connection when response framing permits it. A payload is never newline-delimited or automatically combined with another payload; `Content-Length` is its byte length. JSON serialization still supports both JSON and Oj, while `send` continues to support custom opaque/binary payloads.
 
-### Required client-first rollout
+### Upgrading mixed client and server versions
 
-**This is a breaking transport migration, not a drop-in server replacement.** Puma buffers and dechunks the complete request body before invoking the exporter application. It therefore cannot process the old, indefinitely open chunked stream record-by-record. Roll out in this order:
+**3.0 is a breaking transport release.** The old client kept one chunked POST open for up to 25 seconds and sent each metric as an HTTP chunk. Puma exposes only the completed, dechunked request body to the application, so it cannot process those chunks as they arrive.
 
-1. Deploy the new finite-request client to every producer while the old WEBrick exporter server is still running. WEBrick accepts these ordinary `Content-Length` requests and ignores the v2 header.
-2. Confirm all producers are upgraded.
-3. Deploy the Puma exporter server.
+The 3.0 Puma server accepts both forms:
 
-The Puma server requires the v2 protocol header and a finite body. A completed legacy request is rejected with a clear `400 Unsupported metrics protocol` response; a request without `Content-Length` is rejected with `411 Length Required`. An old long-lived chunked client receives no response while its unterminated body remains within the parser limit because Puma is still buffering it. Puma 8 emits `413 Payload Too Large` as soon as an open stream crosses the parser limit. Puma 7.2.1 applies that chunked-body check only when the request finishes (or times out), so upgrading clients first remains mandatory on every supported Puma version.
+- A 3.0 client request normally contains one metric and is processed immediately. The endpoint also accepts multiple adjacent JSON metric objects in one completed request without adding a new envelope or delimiter.
+- A completed 2.x chunked request may contain multiple adjacent JSON metrics. The server recovers and processes those JSON records after the old client finishes the request.
+- A body that is not a stream of JSON objects is passed to a custom collector once as an opaque payload. A custom payload consisting of multiple adjacent JSON objects is intentionally interpreted as multiple metric payloads.
 
-The client defaults to a 65,536-byte maximum record. This is the exact default `InputBufferSize` at which the old WEBrick block body handler still invokes the collector once; a larger finite request is split across callbacks and is not rollout-safe. The Puma server parser retains a separate 1 MiB default limit. Configure the client with `max_record_size:` and configure the server with either `max_record_size:` or the documented `--max-record-size INTEGER` CLI option. Increasing the client above 65,536 bytes is safe only after no old WEBrick server remains in the rollout path.
+Mixed versions therefore work with caveats rather than a new wire-protocol negotiation:
+
+| Client | Exporter server | Behavior |
+| --- | --- | --- |
+| 2.x | 2.x WEBrick | Existing streaming behavior. |
+| 2.x | 3.0 Puma | Metrics are buffered until the old client rotates its chunked request, normally within 25 seconds. The whole completed request must fit the server request limit. |
+| 3.0 | 2.x WEBrick | Finite requests are valid HTTP and are accepted, but WEBrick's two-write `OK` response can interact with TCP delayed acknowledgements and reduce a persistent connection to roughly 24 requests/second. Avoid this ordering for busy exporters. |
+| 3.0 | 3.0 Puma | Recommended configuration; each metric is processed and acknowledged immediately. |
+
+For the shortest and safest mixed-version window, upgrade the exporter server to 3.0 first, then upgrade its producers. During that window old-client metrics arrive in batches rather than continuously. If an old client can produce more than the server's request limit during one connection lifetime, upgrade that producer together with its server or temporarily raise `--max-record-size`.
+
+The client defaults to a 65,536-byte maximum record, matching the largest request that an old WEBrick block body handler passes to a collector in one callback. The Puma server defaults to a separate 1 MiB limit for the entire completed request, including a legacy multi-metric request. Configure the client with `max_record_size:` and the server with either `max_record_size:` or `--max-record-size INTEGER`. Increasing the client above 65,536 bytes is safe only after no old WEBrick server remains in the rollout path.
 
 The client preserves the historical 10,000-record queue cap and also defaults `max_queue_bytes:` to 10,240,000 bytes (10,000 × 1 KiB, reflecting the sub-1-KiB size of normal built-in metric records). A record is dropped with a warning when it exceeds the client `max_record_size:` or when either `max_queue_size:` or `max_queue_bytes:` would be exceeded. This keeps instrumentation in Rack and job middleware `ensure` paths from replacing application errors while preventing the record-size ceiling from implying a multi-gigabyte default queue. Tune both queue limits for unusually large custom payloads.
 
@@ -1015,7 +1025,7 @@ Client network operations have finite defaults and can be tuned with `open_timeo
 
 `stop(wait_timeout_seconds:)` waits for both queued records and a record already dequeued but still awaiting its response, up to the supplied deadline. Delivery remains at most once: a record is dropped after a network or non-success HTTP response and is never silently replayed.
 
-The `/bench` directory contains a repeatable finite-request transport benchmark that measures through the final client acknowledgement.
+The `/bench` directory contains the repeatable benchmark and measured comparison for the old chunked transport and the 3.0 finite-request Puma transport.
 
 ## JSON generation and parsing
 

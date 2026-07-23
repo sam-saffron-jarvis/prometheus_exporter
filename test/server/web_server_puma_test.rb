@@ -42,7 +42,7 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     with_server(collector: collector) do |_server, port|
       socket = TCPSocket.new("127.0.0.1", port)
       socket.write(
-        "POST /send-metrics HTTP/1.1\r\nHost: localhost\r\nX-Prometheus-Exporter-Protocol: 2\r\nContent-Length: 11\r\n\r\nopaque",
+        "POST /send-metrics HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\n\r\nopaque",
       )
 
       sleep(0.05)
@@ -57,7 +57,7 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     end
   end
 
-  def test_legacy_chunked_stream_is_not_processed_and_is_rejected_when_finished
+  def test_legacy_chunked_stream_is_processed_after_it_finishes
     collector = RecordingCollector.new
     with_server(collector: collector) do |_server, port|
       socket = TCPSocket.new("127.0.0.1", port)
@@ -73,11 +73,61 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
 
       socket.write("0\r\n\r\n")
       status, _headers, body = read_response(socket)
-      assert_equal(400, status)
-      assert_match(/upgrade clients before the Puma server/, body)
-      assert_empty(collector.payloads)
+      assert_equal(200, status)
+      assert_equal("", body)
+      assert_equal(["legacy"], collector.payloads)
     ensure
       socket&.close
+    end
+  end
+
+  def test_legacy_chunked_stream_recovers_multiple_json_metrics
+    collector = RecordingCollector.new
+    first = JSON.generate(name: "one", value: "a}b")
+    second = JSON.generate(name: "two", keys: { quote: '"' })
+
+    with_server(collector: collector) do |server, port|
+      socket = TCPSocket.new("127.0.0.1", port)
+      socket.write(
+        "POST /send-metrics HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n" \
+          "#{first.bytesize.to_s(16)}\r\n#{first}\r\n" \
+          "#{second.bytesize.to_s(16)}\r\n#{second}\r\n0\r\n\r\n",
+      )
+
+      status, = read_response(socket)
+      assert_equal(200, status)
+      assert_equal([first, second], collector.payloads)
+      assert_match(/collector_metrics_total 2/, server.metrics)
+      assert_match(/collector_sessions_total 1/, server.metrics)
+    ensure
+      socket&.close
+    end
+  end
+
+  def test_finite_request_accepts_multiple_adjacent_json_metrics
+    collector = RecordingCollector.new
+    first = JSON.generate(name: "one")
+    second = JSON.generate(name: "two")
+
+    with_server(collector: collector) do |server, port|
+      response = post(port, first + second)
+
+      assert_equal("200", response.code)
+      assert_equal([first, second], collector.payloads)
+      assert_match(/collector_metrics_total 2/, server.metrics)
+      assert_match(/collector_sessions_total 1/, server.metrics)
+    end
+  end
+
+  def test_non_json_object_stream_remains_one_opaque_payload
+    collector = RecordingCollector.new
+    payload = "{]{}"
+
+    with_server(collector: collector) do |_server, port|
+      response = post(port, payload)
+
+      assert_equal("200", response.code)
+      assert_equal([payload], collector.payloads)
     end
   end
 
@@ -243,7 +293,7 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
       socket = TCPSocket.new("127.0.0.1", port)
       socket.write(
         "POST /send-metrics HTTP/1.1\r\nHost: localhost\r\n" \
-          "X-Prometheus-Exporter-Protocol: 2\r\nContent-Length: 17\r\n\r\n0123456789abcdefg",
+          "Content-Length: 17\r\n\r\n0123456789abcdefg",
       )
 
       status, = read_response(socket)
@@ -258,7 +308,7 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
       socket = TCPSocket.new("127.0.0.1", port)
       socket.write(
         "POST /send-metrics HTTP/1.1\r\nHost: localhost\r\n" \
-          "X-Prometheus-Exporter-Protocol: 2\r\nTransfer-Encoding: chunked\r\n\r\n" \
+          "Transfer-Encoding: chunked\r\n\r\n" \
           "11\r\n0123456789abcdefg\r\n0\r\n\r\n",
       )
 
@@ -314,7 +364,6 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
       server.call(
         "PATH_INFO" => "/send-metrics",
         "REQUEST_METHOD" => "POST",
-        "HTTP_X_PROMETHEUS_EXPORTER_PROTOCOL" => "2",
         "CONTENT_LENGTH" => "4",
         "rack.input" => input,
       )
@@ -543,7 +592,6 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
   def post(port, body)
     Net::HTTP.start("127.0.0.1", port) do |http|
       request = Net::HTTP::Post.new("/send-metrics")
-      request["X-Prometheus-Exporter-Protocol"] = "2"
       request.body = body
       http.request(request)
     end
