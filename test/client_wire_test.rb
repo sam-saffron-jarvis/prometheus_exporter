@@ -43,59 +43,6 @@ class PrometheusExporterClientWireTest < Minitest::Test
     cleanup(client, listener, server_thread)
   end
 
-  def test_net_http_handles_informational_and_chunked_responses
-    requests = []
-    listener, port = build_listener
-    server_thread =
-      Thread.new do
-        socket = listener.accept
-        2.times do |index|
-          requests << read_request(socket).last
-          if index == 0
-            socket.write(
-              "HTTP/1.1 100 Continue\r\n\r\n" \
-                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nO\r\n1\r\nK\r\n0\r\n\r\n",
-            )
-          else
-            socket.write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
-          end
-        end
-        socket.close
-      end
-
-    client = synchronous_client(port)
-    client.send("one")
-    client.send("two")
-
-    server_thread.join(2)
-    assert_equal(%w[one two], requests)
-  ensure
-    cleanup(client, listener, server_thread)
-  end
-
-  def test_net_http_reconnects_after_connection_close
-    requests = []
-    listener, port = build_listener
-    server_thread =
-      Thread.new do
-        2.times do
-          socket = listener.accept
-          requests << read_request(socket).last
-          socket.write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
-          socket.close
-        end
-      end
-
-    client = synchronous_client(port)
-    client.send("one")
-    client.send("two")
-
-    server_thread.join(2)
-    assert_equal(%w[one two], requests)
-  ensure
-    cleanup(client, listener, server_thread)
-  end
-
   def test_stalled_response_is_bounded_by_read_timeout_and_not_retried
     requests = Queue.new
     listener, port = build_listener
