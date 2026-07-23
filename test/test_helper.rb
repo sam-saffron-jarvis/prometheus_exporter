@@ -173,8 +173,15 @@ module TlsTestChain
   end
 end
 
+module PumaVersionHelper
+  def puma_reports_busy_threads?
+    Gem::Version.new(Puma::Const::VERSION) >= Gem::Version.new("6.6.0")
+  end
+end
+
 # Allow stubbing process monotonic clock from any class in the suite
 Minitest::Test.send(:include, ClockHelper)
+Minitest::Test.send(:include, PumaVersionHelper)
 
 # Load our gem
 require "prometheus_exporter"
