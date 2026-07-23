@@ -74,7 +74,7 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
       socket.write("0\r\n\r\n")
       status, _headers, body = read_response(socket)
       assert_equal(200, status)
-      assert_equal("", body)
+      assert_equal("OK", body)
       assert_equal(["legacy"], collector.payloads)
     ensure
       socket&.close

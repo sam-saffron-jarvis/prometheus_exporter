@@ -418,7 +418,7 @@ module PrometheusExporter::Server
         @metrics_total.observe
         @collector.process(payload)
       end
-      response(200, "")
+      response(200, "OK")
     rescue => e
       @logger.error "\n\n#{e.inspect}\n#{e.backtrace}\n\n" if @log_enabled
       @bad_metrics_total.observe
