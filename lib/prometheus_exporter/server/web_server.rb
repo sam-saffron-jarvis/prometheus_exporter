@@ -4,127 +4,13 @@ require "logger"
 require "openssl"
 require "puma"
 require "puma/server"
-require "socket"
 require "stringio"
 require "timeout"
+require "uri"
 require "zlib"
 
 module PrometheusExporter::Server
   class WebServer
-    class PumaAdapter
-      MAX_EPHEMERAL_BIND_ATTEMPTS = 5
-      UNAVAILABLE_FAMILY_ERRORS =
-        %i[EAFNOSUPPORT EADDRNOTAVAIL EPROTONOSUPPORT]
-          .filter_map { |name| Errno.const_get(name) if Errno.const_defined?(name) }
-          .freeze
-
-      def initialize(app, log_writer:, max_record_size:, logger:, verbose:)
-        @app = app
-        @log_writer = log_writer
-        @max_record_size = max_record_size
-        @logger = logger
-        @verbose = verbose
-        @listeners = []
-      end
-
-      def start(hosts:, port:, ssl_context: nil)
-        attempts = 0
-        begin
-          attempts += 1
-          build_server
-          bound_port = bind_listeners(hosts, port, ssl_context)
-          @runner = @server.run(true, thread_name: "prometheus-exporter")
-          [@runner, bound_port]
-        rescue Errno::EADDRINUSE
-          close_listeners
-          retry if port.zero? && attempts < MAX_EPHEMERAL_BIND_ATTEMPTS
-          raise
-        rescue StandardError
-          close_listeners
-          raise
-        end
-      end
-
-      def stop
-        @server.stop(true) if @runner&.alive?
-      ensure
-        close_listeners
-        @runner = nil
-      end
-
-      private
-
-      def build_server
-        @server =
-          Puma::Server.new(
-            @app,
-            nil,
-            log_writer: @log_writer,
-            environment: "production",
-            http_content_length_limit: @max_record_size,
-          )
-      end
-
-      def bind_listeners(hosts, requested_port, ssl_context)
-        bound_port = requested_port
-        unavailable_errors = []
-
-        hosts.each do |host|
-          next if listener_covers_host?(host)
-
-          begin
-            listener = add_listener(host, bound_port, ssl_context)
-            @listeners << listener
-            bound_port = listener.local_address.ip_port if bound_port.zero?
-          rescue *UNAVAILABLE_FAMILY_ERRORS => e
-            raise if hosts.one?
-
-            unavailable_errors << e
-            if @verbose
-              @logger.warn "Could not bind unavailable address family #{host}:#{bound_port}: #{e.message}"
-            end
-          end
-        end
-
-        raise unavailable_errors.last if @listeners.empty?
-
-        bound_port
-      end
-
-      def listener_covers_host?(host)
-        return false unless host == "0.0.0.0"
-
-        @listeners.any? { |listener| dual_stack_ipv6_wildcard?(listener) }
-      end
-
-      def dual_stack_ipv6_wildcard?(listener)
-        address = listener.local_address
-        return false unless address.ipv6? && address.ip_address == "::"
-
-        listener.getsockopt(Socket::IPPROTO_IPV6, Socket::IPV6_V6ONLY).int.zero?
-      rescue IOError, SystemCallError, SocketError
-        false
-      end
-
-      def add_listener(host, port, ssl_context)
-        if ssl_context
-          @server.add_ssl_listener(host, port, ssl_context)
-        else
-          @server.add_tcp_listener(host, port)
-        end
-      end
-
-      def close_listeners
-        @listeners.each do |listener|
-          listener.close if listener && !listener.closed?
-        rescue IOError, SystemCallError
-          nil
-        end
-        @listeners.clear
-      end
-    end
-    private_constant :PumaAdapter
-
     PAGESIZE =
       begin
         `getconf PAGESIZE`.to_i
@@ -181,26 +67,21 @@ module PrometheusExporter::Server
       raise "prometheus collector web server has been stopped" if @stopped
 
       begin
-        hosts = listener_hosts
-        if %w[ALL ANY].include?(@bind)
-          @logger.info "Listening on both 0.0.0.0/:: network interfaces"
-        end
-        ssl_context = build_ssl_context if @tls_cert_file
-        @adapter =
-          PumaAdapter.new(
+        @server =
+          Puma::Server.new(
             self,
+            nil,
             log_writer: @puma_log_writer,
-            max_record_size: @max_record_size,
-            logger: @logger,
-            verbose: @verbose,
+            environment: "production",
+            http_content_length_limit: @max_record_size,
           )
-        @runner, @port = @adapter.start(hosts: hosts, port: @port, ssl_context: ssl_context)
-        @runner
+        @server.binder.parse(bind_uris)
+        @port = @server.binder.connected_ports.first
+        @runner = @server.run(true, thread_name: "prometheus-exporter")
       rescue => e
         @logger&.error "Failed to start prometheus collector web on port #{@port}: #{e}"
-        @adapter&.stop
-        @adapter = nil
-        @runner = nil
+        @server&.binder&.close
+        @server = @runner = nil
         raise
       end
     end
@@ -208,9 +89,9 @@ module PrometheusExporter::Server
     def stop
       return if @stopped
 
-      @adapter&.stop
+      @server&.stop(true)
     ensure
-      @runner = nil
+      @server = @runner = nil
       @stopped = true
       close_owned_log
     end
@@ -273,18 +154,26 @@ module PrometheusExporter::Server
       end
     end
 
-    def listener_hosts
-      return %w[:: 0.0.0.0] if %w[ALL ANY].include?(@bind)
-      return [@bind] unless @bind == "localhost"
+    # Puma's binder does the hard part: it resolves "localhost" to every loopback
+    # address, binds the sockets, and builds the TLS context from the ssl:// query
+    # parameters. ALL/ANY binds "[::]" and relies on the kernel's dual-stack socket
+    # to also accept IPv4, so a single listener covers both families on one port.
+    def bind_uris
+      scheme = @tls_cert_file ? "ssl" : "tcp"
+      ["#{scheme}://#{bind_host}:#{@port}#{ssl_query}"]
+    end
 
-      hosts =
-        Socket
-          .ip_address_list
-          .filter_map do |address|
-            address.ip_address if address.ipv4_loopback? || address.ipv6_loopback?
-          end
-          .uniq
-      hosts.empty? ? ["127.0.0.1"] : hosts
+    def bind_host
+      return "[::]" if %w[ALL ANY].include?(@bind)
+      return "localhost" if @bind == "localhost"
+
+      @bind.include?(":") && !@bind.start_with?("[") ? "[#{@bind}]" : @bind
+    end
+
+    def ssl_query
+      return "" unless @tls_cert_file
+
+      "?#{URI.encode_www_form(cert: @tls_cert_file, key: @tls_key_file, verify_mode: "none")}"
     end
 
     def build_self_metrics
@@ -331,16 +220,6 @@ module PrometheusExporter::Server
       @logger&.close
     rescue IOError, SystemCallError
       nil
-    end
-
-    def build_ssl_context
-      require "puma/minissl"
-
-      context = Puma::MiniSSL::Context.new
-      context.cert = @tls_cert_file
-      context.key = @tls_key_file
-      context.verify_mode = Puma::MiniSSL::VERIFY_NONE
-      context
     end
 
     def metrics_response(env)

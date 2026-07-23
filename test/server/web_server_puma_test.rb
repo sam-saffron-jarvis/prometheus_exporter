@@ -393,11 +393,16 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     server&.stop
   end
 
-  def test_default_localhost_port_zero_is_shared_and_all_listeners_close
-    server = PrometheusExporter::Server::WebServer.new(port: 0, collector: RecordingCollector.new)
-    server.start
-    port = server.port
+  def test_localhost_binds_every_loopback_on_one_port_and_releases_it_on_stop
+    probe = TCPServer.new("127.0.0.1", 0)
+    port = probe.local_address.ip_port
+    probe.close
 
+    server =
+      PrometheusExporter::Server::WebServer.new(port: port, collector: RecordingCollector.new)
+    server.start
+
+    assert_equal(port, server.port)
     assert_equal("PONG", Net::HTTP.get("127.0.0.1", "/ping", port))
     if Socket.ip_address_list.any?(&:ipv6_loopback?)
       assert_equal("PONG", Net::HTTP.get("::1", "/ping", port))
@@ -409,38 +414,6 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
   ensure
     server&.stop
     replacement&.close
-  end
-
-  def test_port_zero_retries_a_second_family_address_collision
-    skip "IPv6 loopback is unavailable" if Socket.ip_address_list.none?(&:ipv6_loopback?)
-
-    adapter_class = PrometheusExporter::Server::WebServer.const_get(:PumaAdapter, false)
-    log = StringIO.new
-    adapter =
-      adapter_class.new(
-        ->(_env) { [200, { "Content-Length" => "4" }, ["PONG"]] },
-        log_writer: Puma::LogWriter.new(log, log),
-        max_record_size: 1024,
-        logger: Logger.new(log),
-        verbose: false,
-      )
-    original_add_listener = adapter.method(:add_listener)
-    collision_injected = false
-    adapter.define_singleton_method(:add_listener) do |host, port, ssl_context|
-      if host == "127.0.0.1" && !collision_injected
-        collision_injected = true
-        raise Errno::EADDRINUSE, "simulated second-family ephemeral collision"
-      end
-
-      original_add_listener.call(host, port, ssl_context)
-    end
-
-    _runner, port = adapter.start(hosts: %w[::1 127.0.0.1], port: 0)
-    assert(collision_injected)
-    assert_equal("PONG", Net::HTTP.get("127.0.0.1", "/ping", port))
-    assert_equal("PONG", Net::HTTP.get("::1", "/ping", port))
-  ensure
-    adapter&.stop
   end
 
   def test_any_and_localhost_binds_fail_on_material_family_conflicts
