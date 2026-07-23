@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "logger"
+require "openssl"
 require "puma"
 require "puma/server"
 require "socket"
@@ -460,19 +461,11 @@ module PrometheusExporter::Server
         stored_user, password_hash = line.chomp.split(":", 2)
         next unless stored_user == user && password_hash
 
-        return secure_compare(password.crypt(password_hash), password_hash)
+        return OpenSSL.secure_compare(password.crypt(password_hash), password_hash)
       end
       false
     rescue ArgumentError, Errno::ENOENT
       false
-    end
-
-    def secure_compare(left, right)
-      return false unless left.bytesize == right.bytesize
-
-      result = 0
-      left.bytes.zip(right.bytes) { |left_byte, right_byte| result |= left_byte ^ right_byte }
-      result == 0
     end
 
     def unauthorized_response
