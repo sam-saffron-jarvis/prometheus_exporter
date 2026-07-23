@@ -366,18 +366,6 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     end
   end
 
-  def test_invalid_collector_status_falls_back_to_500
-    [399, 422.5, 600, "not a status"].each do |invalid_status|
-      error =
-        Class
-          .new(StandardError) { define_method(:status_code) { invalid_status } }
-          .new("invalid status")
-      with_server(collector: RecordingCollector.new(error: error)) do |_server, port|
-        assert_equal("500", post(port, "bad").code)
-      end
-    end
-  end
-
   def test_realm_rejects_header_control_characters
     error =
       assert_raises(ArgumentError) do

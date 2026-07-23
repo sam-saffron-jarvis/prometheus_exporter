@@ -254,15 +254,8 @@ module PrometheusExporter::Server
     rescue => e
       @logger.error "\n\n#{e.inspect}\n#{e.backtrace}\n\n" if @log_enabled
       @bad_metrics_total.observe
-      response(collector_error_status(e), "Bad Metrics #{e}")
-    end
-
-    def collector_error_status(error)
-      return 500 unless error.respond_to?(:status_code)
-
-      status = error.status_code
-      status = Integer(status, 10) if status.is_a?(String) && status.match?(/\A\d+\z/)
-      status.is_a?(Integer) && (400..599).cover?(status) ? status : 500
+      status = e.respond_to?(:status_code) ? e.status_code : 500
+      response(status, "Bad Metrics #{e}")
     end
 
     def response(status, body, headers = {})
