@@ -11,18 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking transport migration:** replaced the WEBrick runtime server with an embedded `Puma::Server` using Puma's public listener, lifecycle, and TLS APIs.
-- Changed the client transport from one long-lived chunked request to one finite `Content-Length` request per metric payload. The HTTP endpoint and payload format are unchanged; no protocol-version header was added.
-- The Puma server accepts both one finite metric payload and a completed legacy chunked request. Adjacent JSON objects from a legacy multi-metric request are recovered after Puma dechunks the complete body; old clients are therefore buffered until they rotate their request, normally within 25 seconds.
-- The client record maximum defaults to 65,536 bytes for old-WEBrick compatibility. The Puma server limits each completed request, including a legacy multi-metric request, to 1 MiB by default. Puma 8 rejects an oversized open chunked request as soon as it crosses that limit; Puma 7.2.1 applies the check when the request finishes or times out.
-- The client queue remains capped at 10,000 records and is now also capped at 10,240,000 bytes by default, based on a 1 KiB allowance for normal built-in metric payloads. Both `max_queue_size:` and `max_queue_bytes:` are configurable.
-- Serialized the complete client delivery and persistent `Net::HTTP` lifecycle, including synchronous delivery and stop, so concurrent callers cannot mutate one session.
-- `collector_sessions_total` now counts finite metric HTTP requests (one per record) rather than legacy long-lived streaming sessions; the other exporter self-metrics retain their behavior.
-- Collector exceptions now preserve their intended HTTP error status instead of being accidentally overwritten by `200 OK`.
+- **Breaking:** replaced the WEBrick runtime server with an embedded Puma server.
+- The client now sends one HTTP POST per metric over a reused connection, instead of streaming many metrics over one long-lived chunked request. The `/send-metrics` endpoint and JSON payload format are unchanged.
+- `collector_sessions_total` now counts one HTTP request per record.
+- Collector errors now return their intended HTTP status instead of `200 OK`.
+- Added `max_queue_bytes:` (default ~10 MB) alongside the existing 10,000-record queue cap, and `open_timeout:`/`read_timeout:`/`write_timeout:` for client network operations.
 
 ### Removed
 
-- Removed the WEBrick runtime dependency. Puma `>= 6.4.3` is now required; there is no upper bound on Puma's major version.
+- Removed the WEBrick dependency. Puma `>= 6.4.3` is now required.
 
 ## [2.3.1] - 2025-11-11
 

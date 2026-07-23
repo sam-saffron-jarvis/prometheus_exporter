@@ -983,49 +983,25 @@ histogram.buckets => [0.1, 0.2, 0.3]
 
 ## Transport and version compatibility
 
-`PrometheusExporter::Client#send` and `#send_json` remain asynchronous: they enqueue records and a background worker performs network I/O. In 3.0 the client sends **exactly one metric record per completed HTTP request**:
+`PrometheusExporter::Client#send` and `#send_json` are asynchronous: they enqueue a record and a background worker delivers it. In 3.0 the client sends one HTTP POST per metric to `/send-metrics`, reusing a persistent connection:
 
 ```http
 POST /send-metrics HTTP/1.1
-Host: localhost
 Content-Type: application/octet-stream
 Content-Length: 123
 
-<exactly 123 bytes: JSON or a custom opaque collector payload>
+<123 bytes: one JSON metric, or a custom opaque collector payload>
 ```
 
-This does not add a version header or a new payload format. The client reads every HTTP response before sending the next record and reuses the persistent connection when response framing permits it. A payload is never newline-delimited or automatically combined with another payload; `Content-Length` is its byte length. JSON serialization still supports both JSON and Oj, while `send` continues to support custom opaque/binary payloads.
+The endpoint and payload format are unchanged from 2.x — only the framing differs (a separate request per metric instead of one long-lived chunked stream). JSON serialization still supports both JSON and Oj, and `send` still accepts custom opaque payloads.
 
-### Upgrading mixed client and server versions
+Records larger than `max_record_size:` (default 64 KB) are dropped with a warning, as are records that would exceed the queue caps (`max_queue_size:`, default 10,000; `max_queue_bytes:`, default ~10 MB). Network timeouts are tunable via `open_timeout:`, `read_timeout:`, and `write_timeout:`. TLS requires `tls_ca_file:`, `tls_cert_file:`, and `tls_key_file:` together and verifies the server certificate hostname. Delivery is at most once: a record dropped after a network error or a non-success response is never replayed.
 
-**3.0 is a breaking transport release.** The old client kept one chunked POST open for up to 25 seconds and sent each metric as an HTTP chunk. Puma exposes only the completed, dechunked request body to the application, so it cannot process those chunks as they arrive.
+### Upgrading from 2.x
 
-The 3.0 Puma server accepts both forms:
+3.0 changes the wire framing, so upgrade the exporter server and its clients together. Mixed versions are not recommended: a 3.0 client works against a 2.x WEBrick server but is throttled to roughly 24 requests/second by a TCP delayed-ACK stall in WEBrick's response, and a 2.x client's batched metrics are rejected by a 3.0 server.
 
-- A 3.0 client request normally contains one metric and is processed immediately. The endpoint also accepts multiple adjacent JSON metric objects in one completed request without adding a new envelope or delimiter.
-- A completed 2.x chunked request may contain multiple adjacent JSON metrics. The server recovers and processes those JSON records after the old client finishes the request.
-- A body that is not a stream of JSON objects is passed to a custom collector once as an opaque payload. A custom payload consisting of multiple adjacent JSON objects is intentionally interpreted as multiple metric payloads.
-
-Mixed versions therefore work with caveats rather than a new wire-protocol negotiation:
-
-| Client | Exporter server | Behavior |
-| --- | --- | --- |
-| 2.x | 2.x WEBrick | Existing streaming behavior. |
-| 2.x | 3.0 Puma | Metrics are buffered until the old client rotates its chunked request, normally within 25 seconds. The whole completed request must fit the server request limit. |
-| 3.0 | 2.x WEBrick | Finite requests are valid HTTP and are accepted, but WEBrick's two-write `OK` response can interact with TCP delayed acknowledgements and reduce a persistent connection to roughly 24 requests/second. Avoid this ordering for busy exporters. |
-| 3.0 | 3.0 Puma | Recommended configuration; each metric is processed and acknowledged immediately. |
-
-For the shortest and safest mixed-version window, upgrade the exporter server to 3.0 first, then upgrade its producers. During that window old-client metrics arrive in batches rather than continuously. If an old client can produce more than the server's request limit during one connection lifetime, upgrade that producer together with its server or temporarily raise `--max-record-size`.
-
-The client defaults to a 65,536-byte maximum record, matching the largest request that an old WEBrick block body handler passes to a collector in one callback. The Puma server defaults to a separate 1 MiB limit for the entire completed request, including a legacy multi-metric request. Configure the client with `max_record_size:` and the server with either `max_record_size:` or `--max-record-size INTEGER`. Increasing the client above 65,536 bytes is safe only after no old WEBrick server remains in the rollout path.
-
-The client preserves the historical 10,000-record queue cap and also defaults `max_queue_bytes:` to 10,240,000 bytes (10,000 × 1 KiB, reflecting the sub-1-KiB size of normal built-in metric records). A record is dropped with a warning when it exceeds the client `max_record_size:` or when either `max_queue_size:` or `max_queue_bytes:` would be exceeded. This keeps instrumentation in Rack and job middleware `ensure` paths from replacing application errors while preventing the record-size ceiling from implying a multi-gigabyte default queue. Tune both queue limits for unusually large custom payloads.
-
-Client network operations have finite defaults and can be tuned with `open_timeout:`, `read_timeout:`, and `write_timeout:`. `open_timeout:` covers TCP connection establishment and the TLS handshake in `Net::HTTP`; `read_timeout:` bounds response reads. `Net::HTTP#ssl_timeout` is intentionally not set: it controls TLS session lifetime, not the handshake deadline. The older `connect_timeout:` option remains an alias that takes precedence over `open_timeout:`. TLS requires `tls_ca_file:`, `tls_cert_file:`, and `tls_key_file:` together and verifies the server certificate hostname while sending SNI for DNS hostnames.
-
-`stop(wait_timeout_seconds:)` waits for both queued records and a record already dequeued but still awaiting its response, up to the supplied deadline. Delivery remains at most once: a record is dropped after a network or non-success HTTP response and is never silently replayed.
-
-The `/bench` directory contains the repeatable benchmark and measured comparison for the old chunked transport and the 3.0 finite-request Puma transport.
+See the [`/bench`](bench/) directory for the transport benchmark and a measured comparison of the old and new transports.
 
 ## JSON generation and parsing
 
