@@ -414,76 +414,13 @@ module PrometheusExporter::Server
       end
 
       @sessions_total.observe
-      metric_payloads(body).each do |payload|
-        @metrics_total.observe
-        @collector.process(payload)
-      end
+      @metrics_total.observe
+      @collector.process(body)
       response(200, "OK")
     rescue => e
       @logger.error "\n\n#{e.inspect}\n#{e.backtrace}\n\n" if @log_enabled
       @bad_metrics_total.observe
       response(collector_error_status(e), "Bad Metrics #{e}")
-    end
-
-    # Puma exposes a completed, dechunked request body to Rack. A request may
-    # contain adjacent JSON metric objects: legacy clients produced this after
-    # Puma removed their HTTP chunk boundaries, and custom senders may submit
-    # the same existing payload format directly. Recover those boundaries while
-    # preserving one opaque payload when the body is not a JSON object stream.
-    def metric_payloads(body)
-      offset = skip_json_whitespace(body, 0)
-      return [body] unless body.getbyte(offset) == 123 # {
-
-      payloads = []
-      while offset < body.bytesize
-        finish = json_object_end(body, offset)
-        return [body] unless finish
-
-        payloads << body.byteslice(offset...finish)
-        offset = skip_json_whitespace(body, finish)
-        return [body] unless offset == body.bytesize || body.getbyte(offset) == 123
-      end
-      payloads.length > 1 ? payloads : [body]
-    end
-
-    def json_object_end(body, offset)
-      delimiters = []
-      in_string = false
-      escaped = false
-      index = offset
-
-      while index < body.bytesize
-        byte = body.getbyte(index)
-        if in_string
-          if escaped
-            escaped = false
-          elsif byte == 92 # \\
-            escaped = true
-          elsif byte == 34 # "
-            in_string = false
-          end
-        else
-          case byte
-          when 34 # "
-            in_string = true
-          when 123 # {
-            delimiters << 125
-          when 91 # [
-            delimiters << 93
-          when 125,
-               93 # } ]
-            return unless delimiters.pop == byte
-            return index + 1 if delimiters.empty?
-          end
-        end
-        index += 1
-      end
-      nil
-    end
-
-    def skip_json_whitespace(body, offset)
-      offset += 1 while [9, 10, 13, 32].include?(body.getbyte(offset))
-      offset
     end
 
     def parse_content_length(value)

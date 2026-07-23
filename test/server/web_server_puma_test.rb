@@ -81,30 +81,26 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     end
   end
 
-  def test_legacy_chunked_stream_recovers_multiple_json_metrics
+  def test_each_request_body_is_delivered_as_one_payload
     collector = RecordingCollector.new
-    first = JSON.generate(name: "one", value: "a}b")
-    second = JSON.generate(name: "two", keys: { quote: '"' })
+    first = JSON.generate(name: "one")
+    second = JSON.generate(name: "two")
 
     with_server(collector: collector) do |server, port|
-      socket = TCPSocket.new("127.0.0.1", port)
-      socket.write(
-        "POST /send-metrics HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n" \
-          "#{first.bytesize.to_s(16)}\r\n#{first}\r\n" \
-          "#{second.bytesize.to_s(16)}\r\n#{second}\r\n0\r\n\r\n",
-      )
+      assert_equal("200", post(port, first).code)
+      assert_equal("200", post(port, second).code)
 
-      status, = read_response(socket)
-      assert_equal(200, status)
       assert_equal([first, second], collector.payloads)
       assert_match(/collector_metrics_total 2/, server.metrics)
-      assert_match(/collector_sessions_total 1/, server.metrics)
-    ensure
-      socket&.close
+      assert_match(/collector_sessions_total 2/, server.metrics)
     end
   end
 
-  def test_finite_request_accepts_multiple_adjacent_json_metrics
+  # The 3.0 client sends one metric per finite request, so the web server hands
+  # each completed body to the collector verbatim and never re-splits it. A
+  # legacy client's chunked stream is dechunked by Puma into a single
+  # concatenated body and delivered as one opaque payload.
+  def test_completed_body_is_not_re_split_into_multiple_metrics
     collector = RecordingCollector.new
     first = JSON.generate(name: "one")
     second = JSON.generate(name: "two")
@@ -113,8 +109,8 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
       response = post(port, first + second)
 
       assert_equal("200", response.code)
-      assert_equal([first, second], collector.payloads)
-      assert_match(/collector_metrics_total 2/, server.metrics)
+      assert_equal([first + second], collector.payloads)
+      assert_match(/collector_metrics_total 1/, server.metrics)
       assert_match(/collector_sessions_total 1/, server.metrics)
     end
   end
