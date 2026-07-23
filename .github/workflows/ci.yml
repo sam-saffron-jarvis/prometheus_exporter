@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        puma: ["7.2.1", "8.0.2"]
+        puma: ["6.4.3", "7.2.1", "8.0.2"]
 
     env:
       PUMA_VERSION: ${{ matrix.puma }}
@@ -65,7 +65,7 @@ jobs:
           bundler-cache: true
           cache-version: puma-${{ matrix.puma }}
 
-      - name: Verify embedded server and wire protocol
+      - name: Verify embedded server and wire behavior
         run: bin/rake test
 
   webrick-compatibility:
@@ -85,7 +85,7 @@ jobs:
           bundler: latest
           bundler-cache: true
 
-      - name: Verify mandatory client-first rollout compatibility
+      - name: Verify new client compatibility with WEBrick
         run: bin/rake webrick_compatibility
 
   package-smoke:

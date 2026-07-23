@@ -24,11 +24,5 @@ Gem::Specification.new do |spec|
 
   spec.require_paths = ["lib"]
 
-  spec.add_dependency "json"
-  spec.add_dependency "logger"
-  spec.add_dependency "net-http"
-  spec.add_dependency "puma", ">= 7.2.1", "< 9"
-  spec.add_dependency "stringio"
-  spec.add_dependency "timeout"
-  spec.add_dependency "zlib"
+  spec.add_dependency "puma", ">= 6.4.3"
 end

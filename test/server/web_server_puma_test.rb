@@ -321,7 +321,7 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
 
   def test_oversized_unterminated_legacy_stream_gets_413_when_parser_limit_is_crossed
     if Gem::Version.new(Puma::Const::PUMA_VERSION) < Gem::Version.new("8.0.0")
-      skip "Puma 7 enforces the chunked body limit only after the request finishes"
+      skip "Puma before 8 enforces the chunked body limit only after the request finishes"
     end
 
     with_server(collector: RecordingCollector.new, max_record_size: 16) do |_server, port|
