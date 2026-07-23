@@ -154,10 +154,6 @@ module PrometheusExporter::Server
       end
     end
 
-    # Puma's binder does the hard part: it resolves "localhost" to every loopback
-    # address, binds the sockets, and builds the TLS context from the ssl:// query
-    # parameters. ALL/ANY binds "[::]" and relies on the kernel's dual-stack socket
-    # to also accept IPv4, so a single listener covers both families on one port.
     def bind_uris
       scheme = @tls_cert_file ? "ssl" : "tcp"
       ["#{scheme}://#{bind_host}:#{@port}#{ssl_query}"]
