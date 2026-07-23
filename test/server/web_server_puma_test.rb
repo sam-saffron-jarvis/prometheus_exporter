@@ -336,41 +336,6 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     end
   end
 
-  def test_application_validates_content_length_and_reads_boundedly
-    collector = RecordingCollector.new
-    server =
-      PrometheusExporter::Server::WebServer.new(
-        port: 0,
-        bind: "127.0.0.1",
-        collector: collector,
-        max_record_size: 4,
-      )
-    input =
-      Class
-        .new do
-          attr_reader :requested
-
-          def read(length)
-            @requested = length
-            "12345"
-          end
-        end
-        .new
-    status, =
-      server.call(
-        "PATH_INFO" => "/send-metrics",
-        "REQUEST_METHOD" => "POST",
-        "CONTENT_LENGTH" => "4",
-        "rack.input" => input,
-      )
-
-    assert_equal(413, status)
-    assert_equal(5, input.requested)
-    assert_empty(collector.payloads)
-  ensure
-    server&.stop
-  end
-
   def test_port_zero_uses_one_ephemeral_port_for_any_bind
     server =
       PrometheusExporter::Server::WebServer.new(

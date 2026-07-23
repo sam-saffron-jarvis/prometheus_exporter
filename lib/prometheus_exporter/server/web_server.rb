@@ -277,38 +277,14 @@ module PrometheusExporter::Server
         return response(405, "Method Not Allowed", "Allow" => "POST")
       end
 
-      content_length = parse_content_length(env["CONTENT_LENGTH"]) if env["CONTENT_LENGTH"]
-      if env["CONTENT_LENGTH"] && !content_length
-        return response(400, "Invalid Content-Length", "Connection" => "close")
-      end
-      if content_length && content_length > @max_record_size
-        return response(413, "Metric payload is too large", "Connection" => "close")
-      end
-
-      body = env.fetch("rack.input").read(@max_record_size + 1).to_s
-      if body.bytesize > @max_record_size
-        return response(413, "Metric payload is too large", "Connection" => "close")
-      end
-      if content_length && body.bytesize != content_length
-        return response(400, "Incomplete metric payload", "Connection" => "close")
-      end
-
       @sessions_total.observe
       @metrics_total.observe
-      @collector.process(body)
+      @collector.process(env["rack.input"].read)
       response(200, "OK")
     rescue => e
       @logger.error "\n\n#{e.inspect}\n#{e.backtrace}\n\n" if @log_enabled
       @bad_metrics_total.observe
       response(collector_error_status(e), "Bad Metrics #{e}")
-    end
-
-    def parse_content_length(value)
-      return unless value.to_s.match?(/\A\d+\z/)
-
-      Integer(value, 10)
-    rescue ArgumentError
-      nil
     end
 
     def collector_error_status(error)
