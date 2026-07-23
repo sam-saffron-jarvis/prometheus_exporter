@@ -243,33 +243,7 @@ module PrometheusExporter::Server
     end
 
     def accepts_gzip?(header)
-      qualities = {}
-      header
-        .to_s
-        .split(",")
-        .each do |entry|
-          coding, *parameters = entry.split(";")
-          coding = coding.to_s.strip.downcase
-          next if coding.empty?
-
-          quality = 1.0
-          parameters.each do |parameter|
-            name, value = parameter.split("=", 2).map { |part| part&.strip }
-            next unless name&.casecmp?("q")
-
-            quality = valid_quality(value) || 0.0
-          end
-          qualities[coding] = quality
-        end
-
-      quality = qualities.key?("gzip") ? qualities["gzip"] : qualities.fetch("*", 0.0)
-      quality.positive?
-    end
-
-    def valid_quality(value)
-      return unless value&.match?(/\A(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)\z/)
-
-      value.to_f
+      header.to_s.downcase.include?("gzip")
     end
 
     def handle_metrics(env)

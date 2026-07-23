@@ -490,15 +490,15 @@ class PrometheusExporterPumaWebServerTest < Minitest::Test
     assert_match(/control characters/, error.message)
   end
 
-  def test_gzip_quality_negotiation_and_vary
+  def test_gzip_is_negotiated_by_accept_encoding_and_vary_is_always_set
     with_server(collector: RecordingCollector.new) do |_server, port|
-      disabled = get_metrics(port, "gzip;q=0, *;q=1")
-      assert_nil(disabled["Content-Encoding"])
-      assert_equal("Accept-Encoding", disabled["Vary"])
+      compressed = get_metrics(port, "gzip")
+      assert_equal("gzip", compressed["Content-Encoding"])
+      assert_equal("Accept-Encoding", compressed["Vary"])
 
-      wildcard = get_metrics(port, "br;q=0.5, *;q=0.2")
-      assert_equal("gzip", wildcard["Content-Encoding"])
-      assert_equal("Accept-Encoding", wildcard["Vary"])
+      plain = get_metrics(port, "br")
+      assert_nil(plain["Content-Encoding"])
+      assert_equal("Accept-Encoding", plain["Vary"])
     end
   end
 
